@@ -4,11 +4,11 @@
 
 // ===== 監視対象銀行 =====
 const BANKS = [
-  { name: "ソニー銀行",       url: "https://moneykit.net/visitor/hl/" },
-  { name: "住信SBIネット銀行", url: "https://www.netbk.co.jp/contents/lineup/mogage/" },
+  { name: "ソニー銀行",       url: "https://sonybank.jp/lp/hl/05.html" },
+  { name: "住信SBIネット銀行", url: "https://www.netbk.co.jp/contents/lineup/home-loan/" },
   { name: "auじぶん銀行",     url: "https://www.jibunbank.co.jp/products/homeloan/" },
-  { name: "PayPay銀行",      url: "https://www.paypay-bank.co.jp/service/loan/homeloan/" },
-  { name: "りそな銀行",      url: "https://www.resonabank.co.jp/kojin/jutaku/" },
+  { name: "PayPay銀行",      url: "https://www.paypay-bank.co.jp/mortgage/index.html" },
+  { name: "りそな銀行",       url: "https://www.resonabank.co.jp/kojin/jutaku/" },  // 要確認
 ];
 const KEYWORDS = ["キャンペーン", "金利優遇", "借り換え", "特別", "期間限定"];
 
