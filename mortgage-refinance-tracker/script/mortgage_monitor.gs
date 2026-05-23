@@ -1,6 +1,6 @@
 // ============================================================
-// 住宅ローン借り換えキャンペーン監視 + Claude AI分析 v3
-// Google News RSS方式（タイムアウト対策済み）
+// 住宅ローン借り換えキャンペーン監視 + Claude AI分析 v5
+// Google News RSS方式・直近30日フィルター・文字化け修正済み
 // ============================================================
 
 // ===== 監視対象銀行（検索クエリで管理）=====
@@ -42,11 +42,11 @@ function checkMortgageCampaigns() {
   const results       = [];
   const campaignBanks = [];
 
-  // Google News RSSで各銀行のキャンペーン情報を検索
+  // Google News RSSで各銀行のキャンペーン情報を検索（直近30日）
   BANKS.forEach(bank => {
     try {
       const encodedQuery = encodeURIComponent(bank.query);
-      const rssUrl = `https://news.google.com/rss/search?q=${encodedQuery}&hl=ja&gl=JP&ceid=JP:ja`;
+      const rssUrl = `https://news.google.com/rss/search?q=${encodedQuery}+when:30d&hl=ja&gl=JP&ceid=JP:ja`;
 
       const xml = UrlFetchApp.fetch(rssUrl, {
         muteHttpExceptions: true,
@@ -56,9 +56,9 @@ function checkMortgageCampaigns() {
       // RSSからニュース記事を抽出（最新3件）
       const items   = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
       const excerpt = items.slice(0, 3).map(item => {
-        const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1]
+        const title   = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1]
           || (item.match(/<title>(.*?)<\/title>/) || [])[1] || "";
-        const desc  = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1]
+        const desc    = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1]
           || (item.match(/<description>(.*?)<\/description>/) || [])[1] || "";
         const pubDate = (item.match(/<pubDate>(.*?)<\/pubDate>/) || [])[1] || "";
         return `[${pubDate.substring(0, 16)}] ${title} ${desc}`.substring(0, 160);
@@ -102,12 +102,12 @@ function analyzeWithClaude(campaignBanks, apiKey) {
   ).join("\n\n");
 
   const prompt = `あなたは住宅ローン借り換えの専門家です。
-以下のキャンペーン情報を評価し、JSON配列のみ返してください（他のテキスト不要）。
+以下のキャンペーン情報を評価し、JSON配列のみ返してください（他のテキスト不要、マークダウン不要）。
 
 ${banksText}
 
-形式:
-[{"bank":"銀行名","score":"★1〜5","recommendation":"おすすめ／様子見／不要","reason":"50字以内","point":"注目ポイント"}]`;
+返答形式（このJSONのみ返すこと）:
+[{"bank":"銀行名","score":"★1〜5","recommendation":"おすすめ／様子見／不要","reason":"50字以内の理由","point":"注目ポイント"}]`;
 
   try {
     const res = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
@@ -125,13 +125,22 @@ ${banksText}
         messages:   [{ role: "user", content: prompt }],
       }),
     });
+
     const data = JSON.parse(res.getContentText());
     if (data.error) {
-      Logger.log("Claude APIエラー: " + data.error.message);
+      Logger.log("Claude APIエラー: " + JSON.stringify(data.error));
       return [];
     }
-    const text = data.content[0].text.replace(/```json|```/g, "").trim();
-    return JSON.parse(text);
+
+    // JSON部分を正規表現で確実に抽出
+    const raw   = data.content[0].text;
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) {
+      Logger.log("AI応答のJSON抽出失敗: " + raw);
+      return [];
+    }
+    return JSON.parse(match[0]);
+
   } catch (e) {
     Logger.log("AI分析エラー: " + e.message);
     return [];
@@ -145,37 +154,46 @@ function sendReport(results, aiAnalysis, notifyEmail) {
   const now      = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy/MM/dd HH:mm");
   const hasAlert = results.some(r => r.found?.length && r.changed);
 
+  // 絵文字を使わない件名（文字化け対策）
   const subject = hasAlert
-    ? `🚨【要確認】住宅ローンキャンペーン検出 - ${now}`
-    : `📊【週次レポート】住宅ローンキャンペーン監視 - ${now}`;
+    ? `【要確認】住宅ローンキャンペーン検出 - ${now}`
+    : `【週次レポート】住宅ローンキャンペーン監視 - ${now}`;
 
   let body = `住宅ローン借り換えキャンペーン 週次レポート\n${"=".repeat(40)}\n\n`;
 
   results.forEach(r => {
     if (r.error) {
-      body += `【${r.name}】\n⚠️ ${r.error}\n\n`;
+      body += `【${r.name}】\n[エラー] ${r.error}\n\n`;
       return;
     }
 
     const status = r.found?.length
-      ? `🔴 キャンペーン関連ニュースあり: ${r.found.join("・")}${r.changed ? "（NEW）" : ""}`
-      : "✅ 特段の動きなし";
+      ? `[検出] キャンペーン関連ニュースあり: ${r.found.join("・")}${r.changed ? "（NEW）" : ""}`
+      : "[正常] 特段の動きなし";
 
     body += `【${r.name}】\n${status}\n`;
 
     if (r.excerpt) {
-      body += `最新ニュース:\n${r.excerpt}\n`;
+      body += `最新ニュース（直近30日）:\n${r.excerpt}\n`;
     }
 
     const ai = aiAnalysis.find?.(a => a.bank === r.name);
     if (ai) {
-      body += `🤖 AI評価: ${ai.score} ${ai.recommendation}\n   理由: ${ai.reason}\n   注目: ${ai.point}\n`;
+      body += `\n--- AI評価 ---\n`;
+      body += `おすすめ度  : ${ai.score}\n`;
+      body += `判定       : ${ai.recommendation}\n`;
+      body += `理由       : ${ai.reason}\n`;
+      body += `注目ポイント: ${ai.point}\n`;
+      body += `--------------\n`;
+    } else if (r.found?.length) {
+      body += `\n--- AI評価 ---\n評価を取得できませんでした\n--------------\n`;
     }
 
     body += "\n";
   });
 
   body += `${"─".repeat(40)}\nチェック日時: ${now}\n※ GAS + Claude AIにより自動送信`;
-  GmailApp.sendEmail(notifyEmail, subject, body);
+
+  GmailApp.sendEmail(notifyEmail, subject, body, { name: "住宅ローン監視bot" });
   Logger.log("送信完了: " + subject);
 }
