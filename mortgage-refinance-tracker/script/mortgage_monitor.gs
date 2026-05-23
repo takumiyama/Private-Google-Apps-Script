@@ -1,16 +1,17 @@
 // ============================================================
-// 住宅ローン借り換えキャンペーン監視 + Claude AI分析 v2
+// 住宅ローン借り換えキャンペーン監視 + Claude AI分析 v3
+// Google News RSS方式（タイムアウト対策済み）
 // ============================================================
 
-// ===== 監視対象銀行 =====
+// ===== 監視対象銀行（検索クエリで管理）=====
 const BANKS = [
-  { name: "ソニー銀行",       url: "https://sonybank.jp/lp/hl/05.html" },
-  { name: "住信SBIネット銀行", url: "https://www.netbk.co.jp/contents/lineup/home-loan/" },
-  { name: "auじぶん銀行",     url: "https://www.jibunbank.co.jp/products/homeloan/" },
-  { name: "PayPay銀行",      url: "https://www.paypay-bank.co.jp/mortgage/index.html" },
-  { name: "りそな銀行",       url: "https://www.resonabank.co.jp/kojin/jutaku/" },  // 要確認
+  { name: "ソニー銀行",       query: "ソニー銀行 住宅ローン 借り換え キャンペーン" },
+  { name: "住信SBIネット銀行", query: "住信SBIネット銀行 住宅ローン 借り換え キャンペーン" },
+  { name: "auじぶん銀行",     query: "auじぶん銀行 住宅ローン 借り換え キャンペーン" },
+  { name: "PayPay銀行",      query: "PayPay銀行 住宅ローン 借り換え キャンペーン" },
+  { name: "りそな銀行",       query: "りそな銀行 住宅ローン 借り換え キャンペーン" },
 ];
-const KEYWORDS = ["キャンペーン", "金利優遇", "借り換え", "特別", "期間限定"];
+const KEYWORDS = ["キャンペーン", "金利優遇", "借り換え", "特別", "期間限定", "引き下げ"];
 
 // ============================================================
 // 【初回のみ実行】認証情報をスクリプトプロパティに保存
@@ -41,19 +42,32 @@ function checkMortgageCampaigns() {
   const results       = [];
   const campaignBanks = [];
 
-  // 各銀行をスクレイピング
+  // Google News RSSで各銀行のキャンペーン情報を検索
   BANKS.forEach(bank => {
     try {
-      const html = UrlFetchApp.fetch(bank.url, {
+      const encodedQuery = encodeURIComponent(bank.query);
+      const rssUrl = `https://news.google.com/rss/search?q=${encodedQuery}&hl=ja&gl=JP&ceid=JP:ja`;
+
+      const xml = UrlFetchApp.fetch(rssUrl, {
         muteHttpExceptions: true,
-        followRedirects:    true,
-        headers: { "User-Agent": "Mozilla/5.0" },
-        deadline: 10, // 1サイト最大10秒でスキップ
+        deadline: 10,
       }).getContentText("UTF-8");
 
-      const found   = KEYWORDS.filter(kw => html.includes(kw));
-      const excerpt = extractText(html, found);
+      // RSSからニュース記事を抽出（最新3件）
+      const items   = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+      const excerpt = items.slice(0, 3).map(item => {
+        const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1]
+          || (item.match(/<title>(.*?)<\/title>/) || [])[1] || "";
+        const desc  = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1]
+          || (item.match(/<description>(.*?)<\/description>/) || [])[1] || "";
+        const pubDate = (item.match(/<pubDate>(.*?)<\/pubDate>/) || [])[1] || "";
+        return `[${pubDate.substring(0, 16)}] ${title} ${desc}`.substring(0, 160);
+      }).join("\n");
 
+      // キーワード検出
+      const found = KEYWORDS.filter(kw => xml.includes(kw));
+
+      // 前回差分チェック
       const prev    = props.getProperty(`prev_${bank.name}`) || "none";
       const current = found.length ? found.join(",") : "none";
       props.setProperty(`prev_${bank.name}`, current);
@@ -63,11 +77,10 @@ function checkMortgageCampaigns() {
       if (found.length) campaignBanks.push(result);
 
     } catch (e) {
-      // タイムアウト・エラー時はスキップして記録
       const isTimeout = e.message.includes("Timeout") || e.message.includes("deadline");
       results.push({
         ...bank,
-        error: isTimeout ? "タイムアウト（サイトの応答が遅いためスキップ）" : e.message,
+        error: isTimeout ? "タイムアウト（ネットワーク遅延）" : e.message,
       });
     }
   });
@@ -81,29 +94,11 @@ function checkMortgageCampaigns() {
 }
 
 // ============================================================
-// テキスト抽出（HTML → キーワード周辺のテキスト）
-// ============================================================
-function extractText(html, keywords) {
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi,  "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ").trim();
-
-  return keywords.map(kw => {
-    const i = text.indexOf(kw);
-    return i !== -1
-      ? text.substring(Math.max(0, i - 80), Math.min(text.length, i + 180)) + "…"
-      : "";
-  }).filter(Boolean).join("\n").substring(0, 1000);
-}
-
-// ============================================================
 // Claude API でAI判断
 // ============================================================
 function analyzeWithClaude(campaignBanks, apiKey) {
   const banksText = campaignBanks.map(b =>
-    `【${b.name}】\n検出ワード: ${b.found.join("・")}\n内容:\n${b.excerpt}`
+    `【${b.name}】\n検出ワード: ${b.found.join("・")}\n最新ニュース:\n${b.excerpt}`
   ).join("\n\n");
 
   const prompt = `あなたは住宅ローン借り換えの専門家です。
@@ -115,10 +110,10 @@ ${banksText}
 [{"bank":"銀行名","score":"★1〜5","recommendation":"おすすめ／様子見／不要","reason":"50字以内","point":"注目ポイント"}]`;
 
   try {
-    const res  = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
+    const res = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
       method:             "post",
       muteHttpExceptions: true,
-      deadline: 30, // Claude API最大30秒
+      deadline:           30,
       headers: {
         "Content-Type":       "application/json",
         "x-api-key":         apiKey,
@@ -130,8 +125,12 @@ ${banksText}
         messages:   [{ role: "user", content: prompt }],
       }),
     });
-    const text = JSON.parse(res.getContentText()).content[0].text
-      .replace(/```json|```/g, "").trim();
+    const data = JSON.parse(res.getContentText());
+    if (data.error) {
+      Logger.log("Claude APIエラー: " + data.error.message);
+      return [];
+    }
+    const text = data.content[0].text.replace(/```json|```/g, "").trim();
     return JSON.parse(text);
   } catch (e) {
     Logger.log("AI分析エラー: " + e.message);
@@ -157,16 +156,23 @@ function sendReport(results, aiAnalysis, notifyEmail) {
       body += `【${r.name}】\n⚠️ ${r.error}\n\n`;
       return;
     }
+
     const status = r.found?.length
-      ? `🔴 キャンペーン検出: ${r.found.join("・")}${r.changed ? "（NEW）" : ""}`
-      : "✅ 通常状態";
+      ? `🔴 キャンペーン関連ニュースあり: ${r.found.join("・")}${r.changed ? "（NEW）" : ""}`
+      : "✅ 特段の動きなし";
+
     body += `【${r.name}】\n${status}\n`;
+
+    if (r.excerpt) {
+      body += `最新ニュース:\n${r.excerpt}\n`;
+    }
 
     const ai = aiAnalysis.find?.(a => a.bank === r.name);
     if (ai) {
       body += `🤖 AI評価: ${ai.score} ${ai.recommendation}\n   理由: ${ai.reason}\n   注目: ${ai.point}\n`;
     }
-    body += `URL: ${r.url}\n\n`;
+
+    body += "\n";
   });
 
   body += `${"─".repeat(40)}\nチェック日時: ${now}\n※ GAS + Claude AIにより自動送信`;
