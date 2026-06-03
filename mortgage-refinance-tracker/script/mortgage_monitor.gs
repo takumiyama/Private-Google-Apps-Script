@@ -1,6 +1,6 @@
 // ============================================================
-// 住宅ローン借り換えキャンペーン監視 + Claude AI分析 v5
-// Google News RSS方式・直近30日フィルター・文字化け修正済み
+// 住宅ローン借り換えキャンペーン監視 + Claude AI分析 v6
+// Google News RSS方式・記事元URL表示・文字化け修正済み
 // ============================================================
 
 // ===== 監視対象銀行（検索クエリで管理）=====
@@ -20,7 +20,7 @@ const KEYWORDS = ["キャンペーン", "金利優遇", "借り換え", "特別"
 function setCredentials() {
   const props = PropertiesService.getScriptProperties();
   props.setProperty("ANTHROPIC_API_KEY", "sk-ant-xxxxxxxxxxxxxxxx"); // ← APIキー
-  props.setProperty("NOTIFY_EMAIL",       "your@gmail.com");           // ← メールアドレス
+  props.setProperty("NOTIFY_EMAIL",       "your@gmail.com");          // ← メールアドレス
   Logger.log("認証情報を保存しました");
 }
 
@@ -58,10 +58,11 @@ function checkMortgageCampaigns() {
       const excerpt = items.slice(0, 3).map(item => {
         const title   = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1]
           || (item.match(/<title>(.*?)<\/title>/) || [])[1] || "";
-        const desc    = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1]
-          || (item.match(/<description>(.*?)<\/description>/) || [])[1] || "";
         const pubDate = (item.match(/<pubDate>(.*?)<\/pubDate>/) || [])[1] || "";
-        return `[${pubDate.substring(0, 16)}] ${title} ${desc}`.substring(0, 160);
+        // <link>タグから記事の元URLを抽出
+        const link    = (item.match(/<link>(.*?)<\/link>/) || [])[1]
+          || (item.match(/<link\s[^>]*href="([^"]+)"/) || [])[1] || "";
+        return `[${pubDate.substring(0, 16)}] ${title}\n  URL: ${link}`.substring(0, 300);
       }).join("\n");
 
       // キーワード検出
